@@ -1,0 +1,198 @@
+---
+title: "CPI FORECAST PROJECT"
+author: "Christian"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+```
+
+### Step 1: Load and Clean Data
+
+```{r}
+data <- read.csv("C:\\Users\\NISR\\Downloads\\data1.csv", na.strings = ".")
+data$Date <- as.Date(data$Date, format="%m/%d/%Y")
+library(zoo)
+data$total_rainfall <- na.locf(na.locf(data$total_rainfall, na.rm = FALSE), fromLast = TRUE)
+data$total_temp_max <- na.locf(na.locf(data$total_temp_max, na.rm = FALSE), fromLast = TRUE)
+```
+
+### Step 2: Convert and Inspect Variables
+
+```{r}
+numeric_cols <- c("Exchange.rate", "M1.Billion.", "M2.Billion.", "Inflation.rates")
+for (col in numeric_cols) {
+  data[[col]] <- as.numeric(gsub("[^0-9.]", "", data[[col]]))
+}
+summary(data)
+str(data)
+```
+
+### Step 3: Visualize CPI and Inflation Trends
+
+```{r}
+library(ggplot2)
+ggplot(data, aes(x = Date, y = CPI)) +
+  geom_line(color = "blue") +
+  labs(title = "CPI Trend Over Time", x = "Date", y = "CPI") +
+  theme_minimal()
+
+ggplot(data, aes(x = Date, y = Inflation.rates)) +
+  geom_line(color = "blue") +
+  labs(title = "Inflation Rate Trend Over Time", x = "Date", y = "Inflation Rate") +
+  theme_minimal()
+```
+
+### Step 4: Correlation and Stationarity
+
+```{r}
+library(tseries)
+make_stationary <- function(series) {
+  series <- na.omit(series)
+  if (length(series) < 10) return(rep(NA, length(series)))
+  if (adf.test(series)$p.value > 0.05) return(c(NA, diff(series)))
+  return(series)
+}
+stationary_data <- data %>% select(where(is.numeric)) %>% lapply(make_stationary) %>% do.call(cbind, .) %>% na.omit()
+cor_matrix <- cor(stationary_data, use = "complete.obs")
+print(cor_matrix)
+```
+
+### Step 5: Feature Engineering
+
+```{r}
+data <- data %>%
+  mutate(
+    CPI_lag1 = lag(CPI, 1),
+    CPI_lag2 = lag(CPI, 2),
+    ExchangeRate_lag1 = lag(Exchange.rate, 1),
+    M2_to_M1 = M2.Billion. / M1.Billion.
+  )
+if (adf.test(data$M2_to_M1, alternative = "stationary")$p.value > 0.05) {
+  data <- data %>% mutate(M2_to_M1 = c(NA, diff(M2_to_M1)))
+}
+data <- na.omit(data)
+```
+
+### Step 6: ARIMA Model
+
+```{r}
+library(forecast)
+library(Metrics)
+cpi_ts <- ts(data$CPI, start = c(2010, 1), frequency = 12)
+train_cpi <- window(cpi_ts, end = c(2023, 12))
+test_cpi <- window(cpi_ts, start = c(2024, 1), end = c(2024, 9))
+arima_model <- auto.arima(train_cpi, seasonal = TRUE)
+forecast_cpi <- forecast(arima_model, h = length(test_cpi))
+autoplot(forecast_cpi) +
+  labs(title = "ARIMA CPI Forecast", x = "Year", y = "CPI")
+mape_arima <- mape(test_cpi, forecast_cpi$mean)
+mae_arima <- mae(test_cpi, forecast_cpi$mean)
+mase_arima <- mean(abs(test_cpi - forecast_cpi$mean)) / mean(abs(diff(train_cpi)))
+```
+
+### Step 7: Random Forest Model
+
+```{r}
+library(randomForest)
+library(caret)
+split_point <- which(format(data$Date, "%Y-%m") == "2023-12")[1]
+train_data <- data[1:split_point, ]
+test_data <- data[(split_point + 1):nrow(data), ]
+train_data_rf <- train_data %>% select(-Date)
+test_data_rf <- test_data %>% select(-Date)
+rf_model <- randomForest(CPI ~ ., data = train_data_rf, ntree = 500)
+rf_predictions <- predict(rf_model, newdata = test_data_rf)
+mape_rf <- mape(test_data_rf$CPI, rf_predictions)
+mae_rf <- mae(test_data_rf$CPI, rf_predictions)
+mase_rf <- mean(abs(test_data_rf$CPI - rf_predictions)) / mean(abs(diff(train_data_rf$CPI)))
+cat(" Random Forest Model Evaluation:\n")
+cat(" MAPE:", round(mape_rf, 4), "\n")
+cat(" MAE:", round(mae_rf, 4), "\n")
+cat(" MASE:", round(mase_rf, 4), "\n")
+```
+
+### Step 8: XGBoost Model
+
+```{r}
+library(xgboost)
+train_matrix <- as.matrix(train_data[, -1])
+test_matrix <- as.matrix(test_data[, -1])
+train_labels <- train_data$CPI
+test_labels <- test_data$CPI
+xgb_model <- xgboost(data = train_matrix, label = train_labels, nrounds = 100,
+                     objective = "reg:squarederror", max_depth = 6, eta = 0.1, verbose = 0)
+xgb_predictions <- predict(xgb_model, test_matrix)
+mape_xgb <- mape(test_labels, xgb_predictions)
+mae_xgb <- mae(test_labels, xgb_predictions)
+mase_xgb <- mean(abs(test_labels - xgb_predictions)) / mean(abs(diff(train_labels)))
+# Display results
+cat("XGBoost Model Evaluation:\n")
+cat("  MAPE:", round(mape_xgb, 4), "\n")
+cat("  MAE :", round(mae_xgb, 4), "\n")
+cat("  MASE:", round(mase_xgb, 4), "\n")
+```
+
+### Step 9: Model Comparison
+
+```{r}
+model_comparison <- data.frame(
+  Model = c("ARIMA", "Random Forest", "XGBoost"),
+  MAPE = c(mape_arima, mape_rf, mape_xgb),
+  MAE = c(mae_arima, mae_rf, mae_xgb),
+  MASE = c(mase_arima, mase_rf, mase_xgb)
+)
+print(model_comparison)
+library(ggplot2)
+library(reshape2)
+df_long <- melt(model_comparison, id.vars = "Model")
+ggplot(df_long, aes(x = Model, y = value, fill = variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Model Performance (MAPE, MAE, MASE)", x = "Model", y = "Metric Value") +
+  theme_minimal()
+```
+
+### Step 10: Forecast CPI (Jan–Jul 2025)
+
+```{r}
+n_forecast <- 7
+future_predictions <- numeric(n_forecast)
+future_data <- data
+last_real_CPI <- tail(future_data$CPI, 1)
+future_dates <- seq(as.Date("2025-01-01"), by = "month", length.out = n_forecast)
+for (i in 1:n_forecast) {
+  last_row <- tail(future_data, 1)
+  new_input <- data.frame(
+    Exchange.rate = last_row$Exchange.rate,
+    M1.Billion. = last_row$M1.Billion.,
+    M2.Billion. = last_row$M2.Billion.,
+    Inflation.rates = last_row$Inflation.rates,
+    CPI_lag1 = last_row$CPI_lag1,
+    CPI_lag2 = last_row$CPI_lag2,
+    ExchangeRate_lag1 = last_row$ExchangeRate_lag1,
+    M2_to_M1 = last_row$M2_to_M1,
+    Production.Tons = last_row$Production.Tons,
+    Monthly_Output_Gap = last_row$Monthly_Output_Gap,
+    total_rainfall = last_row$total_rainfall,
+    total_temp_max = last_row$total_temp_max
+  )
+  delta_CPI <- predict(rf_model, new_input)
+  predicted_CPI <- min(last_real_CPI + delta_CPI, last_real_CPI * 1.02)
+  future_predictions[i] <- predicted_CPI
+  last_real_CPI <- predicted_CPI
+  new_row <- last_row
+  new_row$CPI <- predicted_CPI
+  new_row$CPI_lag1 <- predicted_CPI
+  new_row$CPI_lag2 <- last_row$CPI
+  future_data <- rbind(future_data, new_row)
+}
+forecast_df <- data.frame(Date = future_dates, Forecasted_CPI = future_predictions)
+ggplot(forecast_df, aes(x = Date, y = Forecasted_CPI)) +
+  geom_line(color = "darkgreen", linewidth = 1.2) +
+  geom_point(color = "blue", size = 2) +
+  labs(title = "CPI Forecast (Jan–Jul 2025)", x = "Month", y = "Forecasted CPI") +
+  theme_minimal()
+```
