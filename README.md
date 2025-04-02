@@ -1,4 +1,4 @@
-# CPI Forecasting with R Markdown
+# Rwanda's CPI Forecasting 
 
 This repository hosts an R Markdown analysis titled **"CPI Forecast Project"**. The comprehensive file `CPI_Forecast.Rmd` covers the entire workflow for forecasting the Consumer Price Index (CPI) using time series and machine learning methodologies.
 
